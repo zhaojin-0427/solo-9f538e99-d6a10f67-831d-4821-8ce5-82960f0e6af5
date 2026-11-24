@@ -9,7 +9,6 @@ from fastapi import APIRouter, Depends, Query, Response, status
 from . import service
 from .db import Database
 from .deps import get_database
-from .errors import DomainError
 from .schemas import (
     AdditionItem,
     BatchCreate,
@@ -176,6 +175,14 @@ def commit_batch(batch_no: str, database: Database = Depends(get_database)):
     "/batches/{batch_no}/corrections",
     response_model=CorrectionListResponse,
     summary="按批号、学校、统计日查询补报与撤回名单",
+    description=(
+        "仍按批号、学校、统计日查询，名单单号、日期与各项人数沿用原口径。"
+        "查询数据按生效日边界保存（不按日展开），通过索引条件直接定位统计日"
+        "命中的学生，不会扫完该校候选再筛日期。读取上限：辅助记录基础最多 64 条，"
+        "每命中一名学生再放宽 4 条；复查依据每名命中学生最多读取 4 条"
+        "（实际为本批/历史各至多 1 条）。响应分别以 auxiliary_records_read 与 "
+        "basis_records_read 报出这两类记录的实际读取条数。"
+    ),
 )
 def get_corrections(
     batch_no: str,
@@ -197,6 +204,7 @@ def get_corrections(
         candidate_student_count=result.candidate_student_count,
         listed_student_count=result.listed_student_count,
         unmatched_student_count=result.unmatched_student_count,
+        auxiliary_records_read=result.auxiliary_records_read,
         basis_records_read=result.basis_records_read,
     )
 

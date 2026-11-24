@@ -188,6 +188,7 @@ def test_no_change_batch_retains_no_basis(client):
 
     listing = _list(client, "B2", "A", "2026-09-30")
     assert listing["candidate_student_count"] == 0
+    assert listing["auxiliary_records_read"] == 0
     assert listing["basis_records_read"] == 0
     assert listing["listed_student_count"] == 0
 

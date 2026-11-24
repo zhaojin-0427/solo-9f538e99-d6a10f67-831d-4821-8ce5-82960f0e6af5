@@ -5,7 +5,9 @@
 - slips                  批次内登记的转学单版本（可对同一单号做更正）
 - effective_slips        当前生效的学籍依据（由已生效批次维护）
 - basis_records          批次生效时留存的复查依据快照（不可变）
-- basis_student_schools  复查依据中“归属可能发生变化的学校”索引，供清单查询精确取数
+- basis_student_schools  复查依据中“归属可能发生变化的学校”索引，用于候选计数
+- correction_segments    清单查询辅助记录：按生效日边界保存补报/撤回成立区间，
+                         查询时以索引条件直接定位统计日命中的学生（不按日展开）
 """
 
 from __future__ import annotations
@@ -179,6 +181,17 @@ class BasisRecord(Base):
             name="uq_basis_batch_flag_slip",
         ),
         Index("ix_basis_batch_student", "batch_id", "student_no"),
+        # 清单查询命中学生后，按“本批/历史 + 生效日不晚于统计日”各取最晚一条，
+        # 复合索引让两次 LIMIT 1 都成为覆盖索引检索，不回表扫描。
+        Index(
+            "ix_basis_lookup",
+            "batch_id",
+            "student_no",
+            "is_batch_slip",
+            "effective_date",
+            "slip_no",
+            "school_id",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -215,3 +228,50 @@ class BasisStudentSchool(Base):
     )
     student_no: Mapped[str] = mapped_column(String(64), nullable=False)
     school_id: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class CorrectionSegment(Base):
+    """清单查询的辅助记录：学生相对某校“补报/撤回成立”的生效日区间。
+
+    归属只在单据生效日处变化，因此每个区间以生效日为边界
+    （``start_date``/``end_date``），不按统计日逐日展开。区间末点为空表示
+    一直成立。清单查询用 ``start_date <= 统计日`` 与
+    ``end_date > 统计日（或为空）`` 两个索引条件直接定位命中学生，
+    无需先扫完全校候选再回内存筛日期。
+    """
+
+    __tablename__ = "correction_segments"
+    __table_args__ = (
+        UniqueConstraint(
+            "batch_id",
+            "student_no",
+            "school_id",
+            "start_date",
+            name="uq_correction_segment",
+        ),
+        # 清单查询的主索引：按批 + 学校取区间，并在索引内完成日期过滤。
+        Index(
+            "ix_correction_segment_query",
+            "batch_id",
+            "school_id",
+            "start_date",
+            "end_date",
+            "student_no",
+        ),
+        Index(
+            "ix_correction_segment_batch_student",
+            "batch_id",
+            "student_no",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    batch_id: Mapped[int] = mapped_column(
+        ForeignKey("batches.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    student_no: Mapped[str] = mapped_column(String(64), nullable=False)
+    school_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    # add = 该区间内对该校构成补报；withdraw = 该区间内构成撤回。
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)

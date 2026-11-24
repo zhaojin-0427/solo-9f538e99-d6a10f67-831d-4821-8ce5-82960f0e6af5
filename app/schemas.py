@@ -121,4 +121,7 @@ class CorrectionListResponse(BaseModel):
     candidate_student_count: int
     listed_student_count: int
     unmatched_student_count: int
+    # 辅助记录（补报/撤回成立区间）本次实际读取条数。
+    auxiliary_records_read: int
+    # 复查依据（冻结单据快照）本次实际读取条数。
     basis_records_read: int

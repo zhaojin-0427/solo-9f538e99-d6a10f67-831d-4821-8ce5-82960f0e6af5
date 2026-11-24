@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 
 def _slip(slip_no, student_no, school_id, day):
     return {
@@ -57,8 +55,9 @@ def test_basic_addition_and_withdrawal(client):
     assert a_list["addition_count"] == 2
     assert a_list["withdrawal_count"] == 0
     assert {item["student_no"] for item in a_list["additions"]} == {"S1", "S2"}
-    # 两名候选学生共读取 2 条依据。
+    # 两名候选学生共读取 2 条辅助区间、2 条依据。
     assert a_list["candidate_student_count"] == 2
+    assert a_list["auxiliary_records_read"] == 2
     assert a_list["basis_records_read"] == 2
 
     # 统计日早于生效日：归属不变（均未登记），不列入。
@@ -207,11 +206,13 @@ def test_later_backfill_does_not_change_old_report(client):
     # 旧批清单内容不变：仍认为 S1 在 B1 后加入 A。
     old = _list(client, "B1", "A", "2026-09-30")
     assert [i["student_no"] for i in old["additions"]] == ["S1"]
+    assert old["auxiliary_records_read"] == 1
     assert old["basis_records_read"] == 1
 
     # 新批清单按自己的依据计算。
     new = _list(client, "B2", "A", "2026-09-30")
     assert [i["student_no"] for i in new["withdrawals"]] == ["S1"]
+    assert new["auxiliary_records_read"] == 1
     assert new["basis_records_read"] == 2
 
 
@@ -229,9 +230,10 @@ def test_backfill_only_checks_its_own_students(client):
     assert receipt["basis_prior_record_count"] == 1
     assert receipt["basis_batch_record_count"] == 1
 
-    # 查询 A 校只读取 S2 的 2 条依据，与 S1 无关。
+    # 查询 A 校只读取 S2 的辅助区间与 2 条依据，与 S1 无关。
     listing = _list(client, "B2", "A", "2026-09-30")
     assert listing["candidate_student_count"] == 1
+    assert listing["auxiliary_records_read"] == 1
     assert listing["basis_records_read"] == 2
     assert [i["student_no"] for i in listing["withdrawals"]] == ["S2"]
 
@@ -245,23 +247,27 @@ def test_unmatched_reads_are_counted(client):
     _put(client, "B2", _slip("Z2", "S1", "B", "2026-09-10"))
     assert _commit(client, "B2").status_code == 200
 
-    # A 校：统计日 09-20 命中撤回（依据 2 条：Z1 历史 + Z2 本批）。
+    # A 校：统计日 09-20 命中撤回，读取本批/历史依据各 1 条 + 1 条辅助区间。
     hit = _list(client, "B2", "A", "2026-09-20")
     assert len(hit["withdrawals"]) == 1
+    assert hit["auxiliary_records_read"] == 1
     assert hit["basis_records_read"] == 2
 
-    # 统计日 09-05：更正尚未生效，归属仍为 A -> 未命中，但仍读取 2 条依据。
+    # 统计日 09-05：更正尚未生效，归属仍为 A -> 辅助区间在索引内即被日期条件
+    # 排除，未命中；不读取任何复查依据。
     miss_early = _list(client, "B2", "A", "2026-09-05")
     assert miss_early["additions"] == [] and miss_early["withdrawals"] == []
     assert miss_early["candidate_student_count"] == 1
-    assert miss_early["basis_records_read"] == 2
+    assert miss_early["auxiliary_records_read"] == 0
+    assert miss_early["basis_records_read"] == 0
     assert miss_early["unmatched_student_count"] == 1
 
-    # 统计日 08-31：两边都未登记 -> 未命中，仍读取 2 条依据。
+    # 统计日 08-31：两边都未登记 -> 同样未命中，不读取依据。
     miss = _list(client, "B2", "A", "2026-08-31")
     assert miss["additions"] == [] and miss["withdrawals"] == []
     assert miss["candidate_student_count"] == 1
-    assert miss["basis_records_read"] == 2
+    assert miss["auxiliary_records_read"] == 0
+    assert miss["basis_records_read"] == 0
     assert miss["unmatched_student_count"] == 1
 
 

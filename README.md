@@ -28,23 +28,50 @@
 * 该学生在本批生效前的所有有效单据快照；
 * 本批的单据快照。
 
-`GET /api/batches/{batch_no}/corrections` 只读取这份冻结依据，**不回放历史
-批次**。因此后续补录批次、或服务重启，都不会改变旧批清单的内容。
+`GET /api/batches/{batch_no}/corrections` 只读取这份冻结依据与本批的查询数据，
+**不回放历史批次**。因此后续补录批次、或服务重启，都不会改变旧批清单的内容。
 
-### 依据留存与读取条数
+### 清单查询数据与读取条数上限
 
-* **批次回执**（commit 响应与 `GET /api/batches/{batch_no}`）给出
-  `basis_record_count`，即“为复查额外留存的依据条数”，并拆分
-  `basis_prior_record_count`（历史单快照）与 `basis_batch_record_count`（本批单快照）。
-* **清单查询**返回 `basis_records_read`，即本次实际读取的依据条数；
-  候选学生未命中时读取过的依据也计入。`candidate_student_count` 是本批中
-  归属与该校相关的学生数，`unmatched_student_count` 是其中最终未列入的人数。
+提交事务内一并写好两类查询数据（任一失败整体回滚，批次保留草稿、查不到清单）：
+
+* `basis_student_schools`：本批归属会变化的学校索引，用于候选学生计数；
+* `correction_segments`：**辅助记录**，按单据生效日边界保存每名学生相对某校
+  “补报/撤回成立”的半开区间 `[start_date, end_date)`（末点为空表示一直成立）。
+  归属只在生效日处变化，因此 **建数据时不按统计日逐日展开**。
+
+清单查询先用复合索引上的日期条件（`start_date <= 统计日` 且
+`end_date > 统计日或为空`）直接定位统计日命中的学生，**不会扫完该校候选再
+回内存筛日期**；命中后每名学生只做两次 `LIMIT 1` 的索引取数（本批单、历史单
+各至多 1 条）读取复查依据。读取条数有硬上限，超限时返回
+`500 read_budget_exceeded`，不静默超量：
+
+| 记录类型 | 读取上限 |
+| --- | --- |
+| 辅助记录 `correction_segments` | 基础最多 **64** 条；每命中一名学生再放宽 **4** 条 |
+| 复查依据 `basis_records` | 每命中一名学生最多 **4** 条（实现上至多 2 条） |
+
+清单响应分别报出两类记录的 **实际读取条数**：
+
+* `auxiliary_records_read`：辅助记录实际读取条数（未命中时日期条件在索引内
+  即被排除，通常为 0）；
+* `basis_records_read`：复查依据实际读取条数（未命中学生不读取依据）。
+
+`candidate_student_count` 是本批中归属与该校相关的学生数（走索引计数，不读
+记录行），`unmatched_student_count` 是其中统计日未列入的人数。
+
+### 旧版 SQLite 卷升级
+
+旧版本卷没有 `correction_segments` 与依据覆盖索引。服务启动时自动、幂等地
+按 **各批原先留存的冻结依据** 重建查询数据并补齐索引：不改动任何依据、学籍
+与批次数据，旧名单口径不变，旧批同样满足上述读取上限；回填按批提交，中断后
+重启可继续。
 
 ### 只核对本批学生、不逐日展开
 
-依据只为“本批涉及的学生”建立；学校索引只为“归属会随日期变化”的学校建立。
-归属只在单据生效日处变化，因此判定变化时只检查前后两侧生效日的并集，
-不按日展开。
+依据只为“本批涉及的学生”建立；学校索引与辅助区间只为“归属会随日期变化”的
+学校/学生建立。归属只在单据生效日处变化，因此判定变化时只检查前后两侧生效日
+的并集，不按日展开。
 
 ## 快速启动
 
@@ -125,6 +152,7 @@ curl "$BASE/batches/B2026-001/corrections?school_id=SCHOOL-A&statistics_date=202
   "candidate_student_count": 1,
   "listed_student_count": 1,
   "unmatched_student_count": 0,
+  "auxiliary_records_read": 1,
   "basis_records_read": 1
 }
 ```
@@ -147,6 +175,7 @@ curl "$BASE/batches/B2026-001/corrections?school_id=SCHOOL-A&statistics_date=202
 | 409 | `student_day_conflict` | 同一学生同日多单 |
 | 409 | `data_conflict` | 其他数据库约束冲突 |
 | 422 | `slip_student_immutable` | 试图改变单号绑定的学生 |
+| 500 | `read_budget_exceeded` | 清单查询记录读取条数超过预算上限 |
 | 503 | `database_busy` | 数据库繁忙 |
 
 ## 目录结构
