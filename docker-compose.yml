@@ -1,0 +1,18 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: student-status-api:local
+    container_name: student-status-api
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      DATABASE_URL: "sqlite:////data/student_status.db"
+    volumes:
+      # SQLite 数据文件放在命名卷中，容器重建后学籍与历史批次仍在。
+      - student-status-data:/data
+    restart: unless-stopped
+
+volumes:
+  student-status-data:
